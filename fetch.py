@@ -1,3 +1,4 @@
+import csv
 import os
 from time import sleep
 from bs4 import BeautifulSoup
@@ -9,6 +10,7 @@ import json
 _lang = "en"
 _output_folder = "downloads"
 _ted_talks_base_url = "https://www.ted.com/talks/"
+_meta_filename = "meta.csv"
 
 if not os.path.exists(_output_folder):
     os.makedirs(_output_folder)
@@ -16,6 +18,28 @@ if not os.path.exists(_output_folder):
 else:
     print(f"Using existing folder: {_output_folder}")
 os.chdir(_output_folder)
+
+
+def prepend_meta_to_csv(meta):
+    """
+    Inserts a list of new rows in front of the existing meta.csv file.
+
+    Args:
+        meta (list): A list of dictionaries, where each dictionary represents a row to be inserted.
+
+    Returns:
+        None
+    """
+    meta_df = pd.DataFrame(meta)
+
+    try:
+        existing_df = pd.read_csv(_meta_filename)
+    except FileNotFoundError:
+        existing_df = pd.DataFrame(columns=meta_df.columns)
+
+    result_df = pd.concat([meta_df, existing_df], ignore_index=True)
+
+    result_df.to_csv(_meta_filename, index=False)
 
 
 def fetch_meta():
@@ -36,22 +60,38 @@ def fetch_meta():
             max_page = 1
         return max_page
 
+    meta_exists = pd.DataFrame()
+    if os.path.exists(_meta_filename):
+        meta_exists = pd.read_csv(_meta_filename)
+    first_title = meta_exists["Title"].iloc[0] if not meta_exists.empty else ""
     max_page = get_max_page(pagination)
-
     print(f"Max Page:{max_page}")
-    meta, total_video = [], 0
+    meta_fetched, total_video = [], 0
     for page in range(1, max_page + 1):
-        total_video += parse_meta_webpage(f"{url}?page={page}", meta)
+        if parse_meta_webpage(f"{url}?page={page}", first_title, meta_fetched) == False:
+            total_video += len(meta_fetched)
+            break
+        total_video += len(meta_fetched)
+    if len(meta_fetched) > 0:
+        pd.concat([pd.DataFrame(meta_fetched), meta_exists], ignore_index=True).to_csv(
+            _meta_filename, index=False
+        )
 
-    df = pd.DataFrame(meta)
-    df.to_csv("meta.csv", index=False)
     print(
         f"\nTotal Videos: {total_video}\nTotal Pages: {max_page}\nSaved To: meta.csv\nDone!"
     )
 
 
-def parse_meta_webpage(page_url: str, meta=[]):
-    page_count = 0
+def parse_meta_webpage(page_url: str, first_title: str, meta=[]) -> bool:
+    """
+    Parse the TED Talks meta data from the given page URL.
+    Args:
+        page_url (str): URL of the TED Talks page.
+        meta (list): List to store the parsed meta data.
+        existing_title (set): Set to store the existing titles.
+    Returns:
+        If all titles on the page are new (not encountered in existing titles), return True. If any title already exists, return False.
+    """
     response = requests.get(page_url)
     html = response.content
     soup = BeautifulSoup(html, "html.parser")
@@ -61,6 +101,9 @@ def parse_meta_webpage(page_url: str, meta=[]):
     for row in rows:
         download_links = {"Low": None, "Medium": None, "1080p": None}
         download_items = row.find("ul", class_="quick-list__download").find_all("li")
+        title = row.find("div", class_="col-xs-6 title").find("a").text.strip()
+        if first_title == title:
+            return False
         for item in download_items:
             link_text = item.text.strip()
             link_url = item.find("a")["href"]
@@ -75,9 +118,7 @@ def parse_meta_webpage(page_url: str, meta=[]):
                 "Published": row.find("div", class_="col-xs-1")
                 .find("span", class_="meta")
                 .text.strip(),
-                "Title": row.find("div", class_="col-xs-6 title")
-                .find("a")
-                .text.strip(),
+                "Title": title,
                 "Event": row.find("div", class_="col-xs-2 event")
                 .find("a")
                 .text.strip(),
@@ -88,8 +129,7 @@ def parse_meta_webpage(page_url: str, meta=[]):
                 "Details": f"https://www.ted.com{row.find('div', class_='col-xs-6 title').find('a')['href']}",
             }
         )
-        page_count += 1
-    return page_count
+    return True
 
 
 def convert_detail_link_to_summary_name(link: str):
