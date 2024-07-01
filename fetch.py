@@ -20,28 +20,6 @@ else:
 os.chdir(_output_folder)
 
 
-def prepend_meta_to_csv(meta):
-    """
-    Inserts a list of new rows in front of the existing meta.csv file.
-
-    Args:
-        meta (list): A list of dictionaries, where each dictionary represents a row to be inserted.
-
-    Returns:
-        None
-    """
-    meta_df = pd.DataFrame(meta)
-
-    try:
-        existing_df = pd.read_csv(_meta_filename)
-    except FileNotFoundError:
-        existing_df = pd.DataFrame(columns=meta_df.columns)
-
-    result_df = pd.concat([meta_df, existing_df], ignore_index=True)
-
-    result_df.to_csv(_meta_filename, index=False)
-
-
 def fetch_meta():
     url = "https://www.ted.com/talks/quick-list"
     response = requests.get(url)
@@ -231,16 +209,44 @@ def download_summary(url: str):
         return False
 
 
+def download_stats():
+    print("Updating meta.csv...")
+    fetch_meta()
+    meta = pd.read_csv("meta.csv")
+    total = len(meta)
+    summary_successful_downloads = 0
+    subtitle_successful_downloads = 0
+
+    for link in meta["Details"]:
+        summary_name = convert_detail_link_to_summary_name(link)
+        subtitle_name = convert_detail_link_to_subtitle_name(link)
+
+        if os.path.exists(summary_name):
+            summary_successful_downloads += 1
+        if os.path.exists(subtitle_name):
+            subtitle_successful_downloads += 1
+
+    summary_success_rate = (summary_successful_downloads / total) * 100
+    subtitle_success_rate = (subtitle_successful_downloads / total) * 100
+
+    print(
+        f"Summary Download Success Rate: {summary_successful_downloads}/{total} ({summary_success_rate:.2f}%)"
+    )
+    print(
+        f"Subtitle Download Success Rate: {subtitle_successful_downloads}/{total} ({subtitle_success_rate:.2f}%)"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="A script to fetch TED Talks meta data and details."
     )
     parser.add_help = True
     parser.add_argument(
-        "--fetch-meta", action="store_true", help="Fetch meta data from TED Talks"
+        "--download-meta", action="store_true", help="Fetch meta data from TED Talks"
     )
     parser.add_argument(
-        "--fetch-details",
+        "--download-details",
         action="store_true",
         help="Fetch details from TED Talks using local meta data",
     )
@@ -254,17 +260,29 @@ def main():
         type=str,
         help="Language code for subtitles, default is en",
     )
+    parser.add_argument("--download-all", action="store_true", help="Download them all")
+    parser.add_argument(
+        "--download-stats",
+        action="store_true",
+        help="Calculate download success statistics",
+    )
 
     args = parser.parse_args()
     if args.lang != "en":
         _lang = args.lang
-    if args.fetch_meta:
+    if args.download_meta:
         fetch_meta()
-    elif args.fetch_details:
+    elif args.download_details:
         fetch_ted_details_from_meta()
     elif args.download_subtitles:
         ted_talk_id = str(args.download_subtitles)
         download_subtitles(ted_talk_id, _lang)
+    elif args.download_stats:
+        download_stats()
+    elif args.download_all:
+        fetch_meta()
+        fetch_ted_details_from_meta()
+        download_stats()
 
 
 if __name__ == "__main__":
