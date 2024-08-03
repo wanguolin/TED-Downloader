@@ -1,4 +1,3 @@
-import csv
 import os
 from time import sleep
 from bs4 import BeautifulSoup
@@ -6,10 +5,12 @@ import pandas as pd
 import requests
 import argparse
 import json
+import csv
 
 _lang = "en"
 _output_folder = "downloads"
 _ted_talks_base_url = "https://www.ted.com/talks/"
+_quick_list = "https://www.ted.com/talks/quick-list"
 _meta_filename = "meta.csv"
 
 if not os.path.exists(_output_folder):
@@ -21,8 +22,8 @@ os.chdir(_output_folder)
 
 
 def fetch_meta():
-    url = "https://www.ted.com/talks/quick-list"
-    response = requests.get(url)
+    _quick_list = "https://www.ted.com/talks/quick-list"
+    response = requests.get(_quick_list)
     html = response.content
     soup = BeautifulSoup(html, "html.parser")
     pagination = soup.find("div", class_="pagination")
@@ -46,7 +47,10 @@ def fetch_meta():
     print(f"Max Page:{max_page}")
     meta_fetched, total_video = [], 0
     for page in range(1, max_page + 1):
-        if parse_meta_webpage(f"{url}?page={page}", first_title, meta_fetched) == False:
+        if (
+            parse_meta_webpage(f"{_quick_list}?page={page}", first_title, meta_fetched)
+            == False
+        ):
             total_video += len(meta_fetched)
             break
         total_video += len(meta_fetched)
@@ -237,6 +241,35 @@ def download_stats():
     )
 
 
+def download(quality):
+    quality_column_map = {
+        "low": "download_low",
+        "medium": "download_medium",
+        "high": "download_1080p",
+    }
+
+    if quality not in quality_column_map:
+        raise ValueError(
+            "Invalid quality specified. Choose from 'low', 'medium', 'high'."
+        )
+
+    column_name = quality_column_map[quality]
+
+    print(f"Processing download list with {quality} quality...")
+
+    input_file = "meta.csv"
+    output_file = f"download_{quality}.lst"
+
+    download_links = []
+    with open(input_file, "r") as infile, open(output_file, "w") as outfile:
+        reader = csv.DictReader(infile)
+        for row in reader:
+            value = row.get(column_name)
+            if value:
+                outfile.write(value + "\n")
+                download_links.append(value)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="A script to fetch TED Talks meta data and details."
@@ -266,6 +299,12 @@ def main():
         action="store_true",
         help="Calculate download success statistics",
     )
+    parser.add_argument(
+        "--download-audio",
+        type=str,
+        default="low",
+        help="Convert meta.csv into download_<quality>.lst. Default: low quality. Usage: --output-download-list low, medium, high",
+    )
 
     args = parser.parse_args()
     if args.lang != "en":
@@ -283,6 +322,8 @@ def main():
         fetch_meta()
         fetch_ted_details_from_meta()
         download_stats()
+    elif args.download_audio:
+        download(args.download_audio)
 
 
 if __name__ == "__main__":
