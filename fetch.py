@@ -5,10 +5,13 @@ import pandas as pd
 import requests
 import argparse
 import json
+import csv
 
 _lang = "en"
 _output_folder = "downloads"
 _ted_talks_base_url = "https://www.ted.com/talks/"
+_quick_list = "https://www.ted.com/talks/quick-list"
+_meta_filename = "meta.csv"
 
 if not os.path.exists(_output_folder):
     os.makedirs(_output_folder)
@@ -19,8 +22,8 @@ os.chdir(_output_folder)
 
 
 def fetch_meta():
-    url = "https://www.ted.com/talks/quick-list"
-    response = requests.get(url)
+    _quick_list = "https://www.ted.com/talks/quick-list"
+    response = requests.get(_quick_list)
     html = response.content
     soup = BeautifulSoup(html, "html.parser")
     pagination = soup.find("div", class_="pagination")
@@ -36,22 +39,41 @@ def fetch_meta():
             max_page = 1
         return max_page
 
+    meta_exists = pd.DataFrame()
+    if os.path.exists(_meta_filename):
+        meta_exists = pd.read_csv(_meta_filename)
+    first_title = meta_exists["Title"].iloc[0] if not meta_exists.empty else ""
     max_page = get_max_page(pagination)
-
     print(f"Max Page:{max_page}")
-    meta, total_video = [], 0
+    meta_fetched, total_video = [], 0
     for page in range(1, max_page + 1):
-        total_video += parse_meta_webpage(f"{url}?page={page}", meta)
+        if (
+            parse_meta_webpage(f"{_quick_list}?page={page}", first_title, meta_fetched)
+            == False
+        ):
+            total_video += len(meta_fetched)
+            break
+        total_video += len(meta_fetched)
+    if len(meta_fetched) > 0:
+        pd.concat([pd.DataFrame(meta_fetched), meta_exists], ignore_index=True).to_csv(
+            _meta_filename, index=False
+        )
 
-    df = pd.DataFrame(meta)
-    df.to_csv("meta.csv", index=False)
     print(
         f"\nTotal Videos: {total_video}\nTotal Pages: {max_page}\nSaved To: meta.csv\nDone!"
     )
 
 
-def parse_meta_webpage(page_url: str, meta=[]):
-    page_count = 0
+def parse_meta_webpage(page_url: str, first_title: str, meta=[]) -> bool:
+    """
+    Parse the TED Talks meta data from the given page URL.
+    Args:
+        page_url (str): URL of the TED Talks page.
+        meta (list): List to store the parsed meta data.
+        existing_title (set): Set to store the existing titles.
+    Returns:
+        If all titles on the page are new (not encountered in existing titles), return True. If any title already exists, return False.
+    """
     response = requests.get(page_url)
     html = response.content
     soup = BeautifulSoup(html, "html.parser")
@@ -61,6 +83,9 @@ def parse_meta_webpage(page_url: str, meta=[]):
     for row in rows:
         download_links = {"Low": None, "Medium": None, "1080p": None}
         download_items = row.find("ul", class_="quick-list__download").find_all("li")
+        title = row.find("div", class_="col-xs-6 title").find("a").text.strip()
+        if first_title == title:
+            return False
         for item in download_items:
             link_text = item.text.strip()
             link_url = item.find("a")["href"]
@@ -75,9 +100,7 @@ def parse_meta_webpage(page_url: str, meta=[]):
                 "Published": row.find("div", class_="col-xs-1")
                 .find("span", class_="meta")
                 .text.strip(),
-                "Title": row.find("div", class_="col-xs-6 title")
-                .find("a")
-                .text.strip(),
+                "Title": title,
                 "Event": row.find("div", class_="col-xs-2 event")
                 .find("a")
                 .text.strip(),
@@ -88,8 +111,7 @@ def parse_meta_webpage(page_url: str, meta=[]):
                 "Details": f"https://www.ted.com{row.find('div', class_='col-xs-6 title').find('a')['href']}",
             }
         )
-        page_count += 1
-    return page_count
+    return True
 
 
 def convert_detail_link_to_summary_name(link: str):
@@ -191,16 +213,73 @@ def download_summary(url: str):
         return False
 
 
+def download_stats():
+    print("Updating meta.csv...")
+    fetch_meta()
+    meta = pd.read_csv("meta.csv")
+    total = len(meta)
+    summary_successful_downloads = 0
+    subtitle_successful_downloads = 0
+
+    for link in meta["Details"]:
+        summary_name = convert_detail_link_to_summary_name(link)
+        subtitle_name = convert_detail_link_to_subtitle_name(link)
+
+        if os.path.exists(summary_name):
+            summary_successful_downloads += 1
+        if os.path.exists(subtitle_name):
+            subtitle_successful_downloads += 1
+
+    summary_success_rate = (summary_successful_downloads / total) * 100
+    subtitle_success_rate = (subtitle_successful_downloads / total) * 100
+
+    print(
+        f"Summary Download Success Rate: {summary_successful_downloads}/{total} ({summary_success_rate:.2f}%)"
+    )
+    print(
+        f"Subtitle Download Success Rate: {subtitle_successful_downloads}/{total} ({subtitle_success_rate:.2f}%)"
+    )
+
+
+def download(quality):
+    quality_column_map = {
+        "low": "download_low",
+        "medium": "download_medium",
+        "high": "download_1080p",
+    }
+
+    if quality not in quality_column_map:
+        raise ValueError(
+            "Invalid quality specified. Choose from 'low', 'medium', 'high'."
+        )
+
+    column_name = quality_column_map[quality]
+
+    print(f"Processing download list with {quality} quality...")
+
+    input_file = "meta.csv"
+    output_file = f"download_{quality}.lst"
+
+    download_links = []
+    with open(input_file, "r") as infile, open(output_file, "w") as outfile:
+        reader = csv.DictReader(infile)
+        for row in reader:
+            value = row.get(column_name)
+            if value:
+                outfile.write(value + "\n")
+                download_links.append(value)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="A script to fetch TED Talks meta data and details."
     )
     parser.add_help = True
     parser.add_argument(
-        "--fetch-meta", action="store_true", help="Fetch meta data from TED Talks"
+        "--download-meta", action="store_true", help="Fetch meta data from TED Talks"
     )
     parser.add_argument(
-        "--fetch-details",
+        "--download-details",
         action="store_true",
         help="Fetch details from TED Talks using local meta data",
     )
@@ -214,17 +293,37 @@ def main():
         type=str,
         help="Language code for subtitles, default is en",
     )
+    parser.add_argument("--download-all", action="store_true", help="Download them all")
+    parser.add_argument(
+        "--download-stats",
+        action="store_true",
+        help="Calculate download success statistics",
+    )
+    parser.add_argument(
+        "--download-audio",
+        type=str,
+        default="low",
+        help="Convert meta.csv into download_<quality>.lst. Default: low quality. Usage: --output-download-list low, medium, high",
+    )
 
     args = parser.parse_args()
     if args.lang != "en":
         _lang = args.lang
-    if args.fetch_meta:
+    if args.download_meta:
         fetch_meta()
-    elif args.fetch_details:
+    elif args.download_details:
         fetch_ted_details_from_meta()
     elif args.download_subtitles:
         ted_talk_id = str(args.download_subtitles)
         download_subtitles(ted_talk_id, _lang)
+    elif args.download_stats:
+        download_stats()
+    elif args.download_all:
+        fetch_meta()
+        fetch_ted_details_from_meta()
+        download_stats()
+    elif args.download_audio:
+        download(args.download_audio)
 
 
 if __name__ == "__main__":
