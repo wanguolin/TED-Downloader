@@ -130,7 +130,7 @@ def fetch_ted_details_from_meta():
     df = pd.read_csv("meta.csv")
     for _, row in df.iterrows():
         summary_filename = convert_detail_link_to_summary_name(row["Details"])
-        subtitle_filename = convert_detail_link_to_subtitle_name(row["Details"])
+        convert_detail_link_to_subtitle_name(row["Details"])
         if not os.path.exists(summary_filename):
             if download_summary(row["Details"]) == False:
                 print(f"Failed to download details for {row['Details']}")
@@ -150,6 +150,7 @@ def fetch_ted_details_from_meta():
             summary_filename,
             f"{ted_talks_id}.json",
         )
+        print(f"{summary_filename} downloaded and renamed to {ted_talks_id}.json")
 
 
 def download_subtitles(id: str, lang: str, save_to: str) -> bool:
@@ -208,7 +209,6 @@ def download_summary(url: str):
                 f,
                 indent=4,
             )
-            print(f"Saved to {save_content_to}")
     except Exception as e:
         print(f"Failed to save {save_content_to}: {e}")
         os.remove(save_content_to)
