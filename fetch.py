@@ -283,12 +283,12 @@ def main():
     parser.add_argument(
         "--download-details",
         action="store_true",
-        help="Fetch details from TED Talks using local meta data",
+        help="Fetch details (details json and subtitles) from TED Talks using local meta data",
     )
     parser.add_argument(
         "--download-subtitles",
         type=int,
-        help="Fetch subtitles from TED Talks using the provided ID",
+        help="Fetch specified subtitles from TED Talks using the provided ID",
     )
     parser.add_argument(
         "--lang",
