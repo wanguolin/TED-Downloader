@@ -281,7 +281,7 @@ def main():
     parser.add_argument(
         "--download-details",
         action="store_true",
-        help="Fetch details from TED Talks using local meta data",
+        help="Fetch detailed JSON files and subtitles from TED Talks using local metadata",
     )
     parser.add_argument(
         "--download-subtitles",
