@@ -304,23 +304,34 @@ def export_sql(meta_csv_path: str = "meta.csv") -> str:
     sql_file_path = "import_ted_talks.sql"
 
     with open(sql_file_path, "w") as sql_file:
-        # Write CREATE TABLE or ALTER TABLE statement
         sql_file.write(
             f"""
-CREATE TABLE IF NOT EXISTS ted_talks_meta (
-    id SERIAL PRIMARY KEY,
-    published DATE,
-    title VARCHAR({max_varchar_length['Title']}),
-    event VARCHAR({max_varchar_length['Event']}),
-    duration VARCHAR({max_varchar_length['Duration']}),
-    download_links JSONB,
-    details_link VARCHAR({max_varchar_length['Details']}),
-    details_content JSONB
-);
-
-"""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'ted_talks_meta') THEN
+                    CREATE TABLE ted_talks_meta (
+                        id SERIAL PRIMARY KEY,
+                        published DATE,
+                        title VARCHAR({max_varchar_length['Title']}),
+                        event VARCHAR({max_varchar_length['Event']}),
+                        duration VARCHAR({max_varchar_length['Duration']}),
+                        download_links JSONB,
+                        details_link VARCHAR({max_varchar_length['Details']}),
+                        details_content JSONB
+                    );
+                ELSE
+                    ALTER TABLE ted_talks_meta
+                    ALTER COLUMN title TYPE VARCHAR({max_varchar_length['Title']}),
+                    ALTER COLUMN event TYPE VARCHAR({max_varchar_length['Event']}),
+                    ALTER COLUMN duration TYPE VARCHAR({max_varchar_length['Duration']}),
+                    ALTER COLUMN details_link TYPE VARCHAR({max_varchar_length['Details']});
+                END IF;
+            END $$;
+            """
         )
-
+        sql_file.write(
+            f"CREATE INDEX IF NOT EXISTS idx_details_content_keywords ON ted_talks_meta USING GIN ((details_content->'keywords') jsonb_path_ops);\n"
+        )
         sql_file.write(
             f"INSERT INTO ted_talks_meta (published, title, event, duration, download_links, details_link) VALUES\n"
         )
@@ -366,7 +377,11 @@ CREATE TABLE IF NOT EXISTS ted_talks_meta (
                 )
 
                 keywords = data.get("keywords", "")
-                keywords_array = [keyword.strip() for keyword in keywords.split(",")]
+                keywords_array = [
+                    keyword.strip()
+                    for keyword in keywords.split(",")
+                    if "TED" != keyword
+                ]
 
                 if "details_content" not in data:
                     data["details_content"] = {}
