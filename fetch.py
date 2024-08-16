@@ -9,7 +9,6 @@ import csv
 from datetime import datetime
 
 _lang = "en"
-_database_name = "english_listening_room"
 _output_folder = "downloads"
 _ted_talks_base_url = "https://www.ted.com/talks/"
 _quick_list = "https://www.ted.com/talks/quick-list"
@@ -275,9 +274,10 @@ def download(quality: str):
                 download_links.append(value)
 
 
-def export_sql(
-    database_name: str = _database_name, meta_csv_path: str = "meta.csv"
-) -> str:
+def export_sql(meta_csv_path: str = "meta.csv") -> str:
+    def escape_sql_string(s):
+        return s.replace("'", "''").replace("\\", "\\\\")
+
     def scan_meta_max_field_length(csv_path: str) -> tuple:
         max_varchar_length = {
             "Published": 0,
@@ -290,84 +290,70 @@ def export_sql(
         df = pd.read_csv(csv_path)
         df = df.fillna("")
 
-        sql_insert_statements = []
         for _, row in df.iterrows():
             for field in max_varchar_length:
                 field_value = str(row[field])
                 max_varchar_length[field] = max(
                     max_varchar_length[field], len(field_value)
                 )
-            published_date = (
-                lambda d: (
-                    datetime.strptime(d, "%b %Y").strftime("%Y-%m-%d")
-                    if isinstance(d, str) and d != ""
-                    else "NULL"
-                )
-            )(row["Published"])
-            title = row["Title"].replace("'", "''")
-            event = row["Event"]
-            duration = row["Duration"].replace("'", "''")
-            download_links = {
-                "low": row["download_low"],
-                "medium": row["download_medium"],
-                "1080p": row["download_1080p"],
-            }
-            details_link = row["Details"].replace("'", "''")
-            download_links_json = json.dumps(download_links).replace("'", "''")
-            insert_sql = (
-                f"INSERT INTO ted_talks_meta (published, title, event, duration, download_links, details_link) "
-                f"VALUES ("
-                f"'{published_date}', "
-                f"'{title}', "
-                f"'{event}', "
-                f"'{duration}', "
-                f"'{download_links_json}', "
-                f"'{details_link}');"
-            )
-            sql_insert_statements.append(insert_sql)
 
-        return max_varchar_length, "\n".join(sql_insert_statements)
+        return max_varchar_length, df
 
-    max_varchar_length, insert_ted_talks_meta_sql = scan_meta_max_field_length(
-        meta_csv_path
-    )
-
-    create_db_sql = f"""
-    DO $$
-    BEGIN
-        IF EXISTS (SELECT 1 FROM pg_database WHERE datname = '{database_name}') THEN
-            EXECUTE 'DROP DATABASE {database_name}';
-        END IF;
-        EXECUTE 'CREATE DATABASE {database_name}';
-    END
-    $$;
-    """
-
-    create_table_sql = f"""
-    CREATE TABLE ted_talks_meta (
-        id SERIAL PRIMARY KEY,
-        published DATE,
-        title VARCHAR({max_varchar_length['Title']}) UNIQUE NOT NULL,
-        event VARCHAR({max_varchar_length['Event']}),
-        duration VARCHAR({max_varchar_length['Duration']}),
-        download_links JSONB,
-        details_link VARCHAR({max_varchar_length['Details']}),
-        details_content JSONB
-    );
-    """
-
-    optimize_table_sql = """
-    CREATE INDEX idx_details_content_keywords ON english_listening_classroom USING GIN ((details_content->'keywords') jsonb_path_ops);
-    """
+    max_varchar_length, df = scan_meta_max_field_length(meta_csv_path)
 
     sql_file_path = "import_ted_talks.sql"
 
     with open(sql_file_path, "w") as sql_file:
-        sql_file.write(create_db_sql)
-        sql_file.write(create_table_sql)
-        sql_file.write(optimize_table_sql)
-        sql_file.write(insert_ted_talks_meta_sql)
+        # Write CREATE TABLE or ALTER TABLE statement
+        sql_file.write(
+            f"""
+CREATE TABLE IF NOT EXISTS ted_talks_meta (
+    id SERIAL PRIMARY KEY,
+    published DATE,
+    title VARCHAR({max_varchar_length['Title']}),
+    event VARCHAR({max_varchar_length['Event']}),
+    duration VARCHAR({max_varchar_length['Duration']}),
+    download_links JSONB,
+    details_link VARCHAR({max_varchar_length['Details']}),
+    details_content JSONB
+);
 
+"""
+        )
+
+        sql_file.write(
+            f"INSERT INTO ted_talks_meta (published, title, event, duration, download_links, details_link) VALUES\n"
+        )
+        detail_to_title = {}
+        for _, row in df.iterrows():
+            published_date = (
+                datetime.strptime(row["Published"], "%b %Y").strftime("%Y-%m-%d")
+                if row["Published"]
+                else "NULL"
+            )
+            title = escape_sql_string(row["Title"])
+            event = escape_sql_string(row["Event"])
+            duration = escape_sql_string(row["Duration"])
+            download_links = escape_sql_string(
+                json.dumps(
+                    {
+                        "low": row["download_low"],
+                        "medium": row["download_medium"],
+                        "1080p": row["download_1080p"],
+                    }
+                )
+            )
+            details_link = escape_sql_string(row["Details"])
+            detail_to_title[details_link.split("/")[-1]] = title
+
+            sql_file.write(
+                f"({published_date!r}, '{title}', '{event}', '{duration}', '{download_links}'::jsonb, '{details_link}'),\n"
+            )
+
+        sql_file.seek(sql_file.tell() - 2)  # Remove the last comma and newline
+        sql_file.write(";\n\n")  # End the INSERT statement
+
+        # Write UPDATE statements for details_content
         for json_file in [
             f
             for f in os.listdir(".")
@@ -375,7 +361,9 @@ def export_sql(
         ]:
             with open(json_file, "r") as file:
                 data = json.load(file)
-                title = os.path.splitext(os.path.basename(json_file))[0]
+                title = escape_sql_string(
+                    os.path.splitext(os.path.basename(json_file))[0]
+                )
 
                 keywords = data.get("keywords", "")
                 keywords_array = [keyword.strip() for keyword in keywords.split(",")]
@@ -384,17 +372,20 @@ def export_sql(
                     data["details_content"] = {}
                 data["details_content"]["keywords"] = keywords_array
 
-                details_content_json = json.dumps(data["details_content"]).replace(
-                    "'", "''"
+                details_content_json = escape_sql_string(
+                    json.dumps(data["details_content"])
                 )
-                update_sql = f"""
-                UPDATE english_listening_classroom 
-                SET details_content = '{details_content_json}' 
-                WHERE title = '{title}';
-                """
-                sql_file.write(update_sql)
+                sql_file.write(
+                    f"""
+UPDATE ted_talks_meta
+SET details_content = '{details_content_json}'::jsonb
+WHERE title = '{detail_to_title[json_file.replace('.json', '')]}';
+"""
+                )
 
-    print(f"The sql file is saved to {sql_file_path}")
+    print(f"The SQL file is saved to {sql_file_path}")
+
+    return sql_file_path
 
 
 def main():
