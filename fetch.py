@@ -7,6 +7,7 @@ import argparse
 import json
 import csv
 from datetime import datetime
+from collections import defaultdict
 
 _lang = "en"
 _output_folder = "downloads"
@@ -283,7 +284,12 @@ def export_sql(
         return "'" + s.replace("'", "''").replace("\\", "\\\\") + "'"
 
     def escape_json(json_data):
-        return json.dumps(json_data).replace("'", "''")
+        json_str = json.dumps(json_data, ensure_ascii=False)
+        json_str = json_str.replace('\n', ' ')
+        json_str = json_str.replace('\t', ' ')
+        json_str = json_str.replace('\r', ' ')
+        json_str = json_str.replace("'", "''")
+        return json_str
 
     def get_details_and_subtitles(details_link: str) -> tuple[str, bool]:
         details_json, subtitle_json = {}, False
@@ -301,6 +307,8 @@ def export_sql(
                     pass
         return details_json, subtitle_json
 
+    titles = []
+    keywords = defaultdict(int)
     with open(sql_file_path, "w") as sql_file:
         sql_file.write(
             f"INSERT INTO ted_talks (published, title, event, duration, downloads_json, details_link, details_json, has_subtitles) VALUES\n"
@@ -320,31 +328,40 @@ def export_sql(
                 max_varchar_length[field] = max(
                     max_varchar_length[field], len(field_value)
                 )
-
             published_date = (
                 datetime.strptime(row["Published"], "%b %Y").strftime("%Y-%m-%d")
                 if row["Published"]
                 else "NULL"
             )
             details_json, has_subtitles = get_details_and_subtitles(row["Details"])
-
+            if details_json.get("keywords", None) != None:
+                details_json["keywords"] = details_json["keywords"].split(", ")
+                details_json["keywords"] = [keyword.strip() for keyword in details_json["keywords"] if keyword.strip() not in ["TED", "talks"]]
+                for keyword in details_json["keywords"]:
+                    keywords[keyword] += 1
             download_links = {
                 "low": row["download_low"],
                 "medium": row["download_medium"],
                 "1080p": row["download_1080p"],
             }
-
             sql_file.write(
                 f"({escape_sql_string(published_date)}, {escape_sql_string(row['Title'])}, {escape_sql_string(row['Event'])}, "
                 f"{escape_sql_string(row['Duration'])}, '{escape_json(download_links)}'::jsonb, {escape_sql_string(row['Details'])}, "
                 f"'{escape_json(details_json)}'::jsonb, {str(has_subtitles).lower()}),\n"
             )
-
+            titles.append(row["Title"])
         sql_file.seek(sql_file.tell() - 2)
         sql_file.write(";\n\n")
 
+    with open("titles.json", "w") as f:
+        json.dump(titles, f, indent=4)
+    
+    with open("keywords.json", "w") as f:
+        json.dump(keywords, f, indent=4)
+    
     print(
-        f"The SQL file is saved to: {sql_file_path}, suggest max_varchar_length: {max_varchar_length}"
+        f"Titles are saved to titles.json and keywords.json, don't forget to copy it into the targeting folder\n"
+        f"The SQL file is saved to: {sql_file_path},\n suggest max_varchar_length: {max_varchar_length}"
     )
 
     return sql_file_path
