@@ -116,23 +116,21 @@ def parse_meta_webpage(page_url: str, first_title: str, meta=[]) -> bool:
     return True
 
 
-def convert_detail_link_to_summary_name(link: str):
+def convert_detail_link_to_filenames(link: str, lang: str = _lang) -> tuple[str, str]:
     if _ted_talks_base_url not in link:
         raise ValueError("Invalid TED Talk link")
-    return f"{link.replace(_ted_talks_base_url, '')}.json"
-
-
-def convert_detail_link_to_subtitle_name(link: str):
-    if _ted_talks_base_url not in link:
-        raise ValueError("Invalid TED Talk link")
-    return f"{link.replace(_ted_talks_base_url, '')}_sub_{_lang}.json"
+    
+    base_name = link.replace(_ted_talks_base_url, '')
+    summary_filename = f"{base_name}.json"
+    subtitle_filename = f"{base_name}_sub_{lang}.json"
+    
+    return summary_filename, subtitle_filename
 
 
 def fetch_ted_details_from_meta():
     df = pd.read_csv("meta.csv")
     for _, row in df.iterrows():
-        summary_filename = convert_detail_link_to_summary_name(row["Details"])
-        subtitle_filename = convert_detail_link_to_subtitle_name(row["Details"])
+        summary_filename, subtitle_filename = convert_detail_link_to_filenames(row["Details"])
         if (
             not os.path.exists(summary_filename)
             or os.path.getsize(summary_filename) == 0
@@ -291,27 +289,25 @@ def export_sql(
         json_str = json_str.replace("'", "''")
         return json_str
 
-    def get_details_and_subtitles(details_link: str) -> tuple[str, bool]:
-        details_json, subtitle_json = {}, False
-        subtitle_filename = convert_detail_link_to_subtitle_name(details_link)
-        details_filename = convert_detail_link_to_summary_name(details_link)
-        if os.path.exists(details_filename):
-            with open(details_filename, "r") as f:
-                details_json = json.load(f)
-        if os.path.exists(subtitle_filename) and os.path.getsize(subtitle_filename) > 0:
-            with open(subtitle_filename, "r") as f:
-                try:
-                    subtitle_json = json.load(f)
-                    subtitle_json = True
-                except:
-                    pass
-        return details_json, subtitle_json
+    def get_details_and_subtitles(details_link: str) -> tuple[dict, dict]:
+        def safe_load_json(filename: str) -> dict:
+            try:
+                with open(filename, "r") as f:
+                    return json.load(f)
+            except (FileNotFoundError, json.JSONDecodeError):
+                return {}
+
+        details_filename, subtitle_filename = convert_detail_link_to_filenames(details_link)
+        details_json, subtitles_json = safe_load_json(details_filename), safe_load_json(subtitle_filename)
+
+        return details_json, subtitles_json
+
 
     titles = []
     keywords = defaultdict(int)
     with open(sql_file_path, "w") as sql_file:
         sql_file.write(
-            f"INSERT INTO ted_talks (published, title, event, duration, downloads_json, details_link, details_json, has_subtitles) VALUES\n"
+            f"INSERT INTO ted_talks (published, title, event, duration, downloads_json, details_link, details_json, subtitles_json) VALUES\n"
         )
         max_varchar_length = {
             "Published": 0,
@@ -333,7 +329,7 @@ def export_sql(
                 if row["Published"]
                 else "NULL"
             )
-            details_json, has_subtitles = get_details_and_subtitles(row["Details"])
+            details_json, subtitles_json = get_details_and_subtitles(row["Details"])
             if details_json.get("keywords", None) != None:
                 details_json["keywords"] = details_json["keywords"].split(", ")
                 details_json["keywords"] = [keyword.strip() for keyword in details_json["keywords"] if keyword.strip() not in ["TED", "talks"]]
@@ -347,7 +343,7 @@ def export_sql(
             sql_file.write(
                 f"({escape_sql_string(published_date)}, {escape_sql_string(row['Title'])}, {escape_sql_string(row['Event'])}, "
                 f"{escape_sql_string(row['Duration'])}, '{escape_json(download_links)}'::jsonb, {escape_sql_string(row['Details'])}, "
-                f"'{escape_json(details_json)}'::jsonb, {str(has_subtitles).lower()}),\n"
+                f"'{escape_json(details_json)}'::jsonb, {escape_json(subtitles_json)}),\n"
             )
             titles.append(row["Title"])
         sql_file.seek(sql_file.tell() - 2)
