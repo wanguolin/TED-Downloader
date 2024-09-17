@@ -8,6 +8,11 @@ import json
 import csv
 from datetime import datetime
 from collections import defaultdict
+import uuid
+from supabase import create_client, Client
+import getpass
+from tqdm import tqdm
+
 
 _lang = "en"
 _output_folder = "downloads"
@@ -273,22 +278,7 @@ def download(quality: str):
                 download_links.append(value)
 
 
-def export_sql(
-    meta_csv_path: str = "meta.csv", sql_file_path: str = "import_ted_talks.sql"
-) -> str:
-    def escape_sql_string(s):
-        if s is None:
-            return "NULL"
-        return "'" + s.replace("'", "''").replace("\\", "\\\\") + "'"
-
-    def escape_json(json_data):
-        json_str = json.dumps(json_data, ensure_ascii=False)
-        json_str = json_str.replace('\n', ' ')
-        json_str = json_str.replace('\t', ' ')
-        json_str = json_str.replace('\r', ' ')
-        json_str = json_str.replace("'", "''")
-        return json_str
-
+def import_to_supabase(meta_csv_path: str = "meta.csv", supabase_url_override: str = None) -> str:
     def get_details_and_subtitles(details_link: str) -> tuple[dict, dict]:
         def safe_load_json(filename: str) -> dict:
             try:
@@ -296,72 +286,73 @@ def export_sql(
                     return json.load(f)
             except (FileNotFoundError, json.JSONDecodeError):
                 return {}
-
         details_filename, subtitle_filename = convert_detail_link_to_filenames(details_link)
         details_json, subtitles_json = safe_load_json(details_filename), safe_load_json(subtitle_filename)
-
         return details_json, subtitles_json
+    
+    print("Please enter your Supabase credentials:")
+    supabase_url = "http://localhost:54321"
+    if supabase_url_override is not None:
+        supabase_url = supabase_url_override
+    supabase_key = getpass.getpass("Supabase Key: ")
 
+    supabase: Client = create_client(supabase_url, supabase_key)
 
     titles = []
     keywords = defaultdict(int)
-    with open(sql_file_path, "w") as sql_file:
-        sql_file.write(
-            f"INSERT INTO ted_talks (published, title, event, duration, downloads_json, details_link, details_json, subtitles_json) VALUES\n"
+
+    df = pd.read_csv(meta_csv_path)
+    df.fillna("", inplace=True)
+    max_varchar_size = {
+        "title": 0,
+        "event": 0,
+        "duration": 0,
+        "details_link": 0,
+    }
+    for _, row in tqdm(df.iterrows(), total=df.shape[0], desc="Importing data"):
+        published_date = (
+            datetime.strptime(row["Published"], "%b %Y").strftime("%Y-%m-%d")
+            if row["Published"]
+            else None
         )
-        max_varchar_length = {
-            "Published": 0,
-            "Title": 0,
-            "Event": 0,
-            "Duration": 0,
-            "Details": 0,
+        details_json, subtitles_json = get_details_and_subtitles(row["Details"])
+        if details_json.get("keywords", None) is not None:
+            details_json["keywords"] = [keyword.strip() for keyword in details_json["keywords"].split(", ") if keyword.strip() not in ["TED", "talks"]]
+            for keyword in details_json["keywords"]:
+                keywords[keyword] += 1
+        download_links = {
+            "low": row["download_low"],
+            "medium": row["download_medium"],
+            "1080p": row["download_1080p"],
         }
-        df = pd.read_csv(meta_csv_path)
-        df.fillna("", inplace=True)
-        for _, row in df.iterrows():
-            for field in max_varchar_length:
-                field_value = str(row[field])
-                max_varchar_length[field] = max(
-                    max_varchar_length[field], len(field_value)
-                )
-            published_date = (
-                datetime.strptime(row["Published"], "%b %Y").strftime("%Y-%m-%d")
-                if row["Published"]
-                else "NULL"
-            )
-            details_json, subtitles_json = get_details_and_subtitles(row["Details"])
-            if details_json.get("keywords", None) != None:
-                details_json["keywords"] = details_json["keywords"].split(", ")
-                details_json["keywords"] = [keyword.strip() for keyword in details_json["keywords"] if keyword.strip() not in ["TED", "talks"]]
-                for keyword in details_json["keywords"]:
-                    keywords[keyword] += 1
-            download_links = {
-                "low": row["download_low"],
-                "medium": row["download_medium"],
-                "1080p": row["download_1080p"],
-            }
-            sql_file.write(
-                f"({escape_sql_string(published_date)}, {escape_sql_string(row['Title'])}, {escape_sql_string(row['Event'])}, "
-                f"{escape_sql_string(row['Duration'])}, '{escape_json(download_links)}'::jsonb, {escape_sql_string(row['Details'])}, "
-                f"'{escape_json(details_json)}'::jsonb, {escape_json(subtitles_json)}),\n"
-            )
-            titles.append(row["Title"])
-        sql_file.seek(sql_file.tell() - 2)
-        sql_file.write(";\n\n")
+        title, event, duration, details_link = row['Title'], row['Event'], row['Duration'], row['Details']
+        data, count = supabase.table("ted_talks").insert({
+            "published": published_date,
+            "title": title,
+            "event": event,
+            "duration": duration,
+            "downloads_json": download_links,
+            "details_link": details_link,
+            "details_json": details_json,
+            "subtitles_json": subtitles_json
+        }).execute()
+        titles.append(title)
+        max_varchar_size["title"] = max(max_varchar_size["title"], len(title))
+        max_varchar_size["event"] = max(max_varchar_size["event"], len(event))
+        max_varchar_size["duration"] = max(max_varchar_size["duration"], len(duration))
+        max_varchar_size["details_link"] = max(max_varchar_size["details_link"], len(details_link))
 
     with open("titles.json", "w") as f:
         json.dump(titles, f, indent=4)
     
     with open("keywords.json", "w") as f:
         json.dump(keywords, f, indent=4)
-    
+        
     print(
-        f"Titles are saved to titles.json and keywords.json, don't forget to copy it into the targeting folder\n"
-        f"The SQL file is saved to: {sql_file_path},\n suggest max_varchar_length: {max_varchar_length}"
+        f"Titles are saved to titles.json and keywords.json, don't forget to copy it into the targeting folder\n Max varchar size: {max_varchar_size}"
     )
 
-    return sql_file_path
-
+    return "Data import completed successfully"
 
 def main():
     parser = argparse.ArgumentParser(
@@ -403,10 +394,12 @@ def main():
         help="Convert meta.csv into download_<quality>.lst. Default: low quality. Usage: --output-download-list low, medium, high",
     )
     parser.add_argument(
-        "--export-sql",
-        action="store_true",
+        "--import-supabase",
+        nargs="?",
+        const=True,
         default=False,
-        help="Export meta.csv and json files to SQL database",
+        metavar="URL",
+        help="Import meta.csv and json files to Supabase database. Optionally specify a Supabase URL.",
     )
 
     args = parser.parse_args()
@@ -427,8 +420,9 @@ def main():
         download_stats()
     elif args.download_audio is not None:
         download(args.download_audio)
-    elif args.export_sql:
-        export_sql()
+    elif args.import_supabase:
+        supabase_url = args.import_supabase if isinstance(args.import_supabase, str) else None
+        import_to_supabase(supabase_url_override=supabase_url)
 
 
 if __name__ == "__main__":
